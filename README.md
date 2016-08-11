@@ -1,6 +1,6 @@
 # SockJs for clojure
 
-This is a sockjs implementation on top of the http-kit server.
+This is a sockjs implementation on top of the immutant server.
 
 ## Installation
 
