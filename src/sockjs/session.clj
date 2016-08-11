@@ -1,6 +1,8 @@
 (ns sockjs.session
-  (:require [org.httpkit.server :as server]
-            [org.httpkit.timer :as timer]
+  (:require [immutant.web             :as web]
+            [immutant.web.async       :as async]
+            [immutant.web.middleware  :as web-middleware]
+            [immutant.scheduling :refer :all]
             [cheshire.core :as json]
             [clojure.string :as cstr]))
 
@@ -76,8 +78,8 @@
 (defn start-heatbeat [session]
   (let [timer-ref (:heatbeat-timer session)]
     (when (not (nil? @timer-ref))
-      (timer/cancel @timer-ref))
-    (reset! timer-ref (timer/schedule-task
+      (stop @timer-ref))
+    (reset! timer-ref (schedule
                        (or (:heatbeat-delay session) 25000)
                        (when (open-channel? session)
                          (send! session {:type :heatbeat})
@@ -86,13 +88,13 @@
 (defn stop-heatbeat [session]
   (let [timer-ref (:heatbeat-timer session)]
     (when (not (nil? @timer-ref))
-      (timer/cancel @timer-ref))))
+      (stop @timer-ref))))
 
 (defn start-disconnect [session]
   (let [timer-ref (:disconnect-timer session)]
     (when (not (nil? @timer-ref))
-      (timer/cancel @timer-ref))
-    (reset! timer-ref (timer/schedule-task
+      (stop @timer-ref))
+    (reset! timer-ref (schedule
                        (or (:disconnect-delay session) 5000)
                        (when-not (open-channel? session)
                          (stop-heatbeat session)
@@ -102,7 +104,7 @@
 (defn stop-heatbeat [session]
   (let [timer-ref (:disconnect-timer session)]
     (when (not (nil? @timer-ref))
-      (timer/cancel @timer-ref))))
+      (stop @timer-ref))))
 
 (defrecord StreamingSession [channel buffer fmt bytes-send disconnect-timer
                              heatbeat-timer]
@@ -110,22 +112,22 @@
   
   (send! [this msg]
     (if (and (not (nil? @channel))
-             (server/open? @channel)
+             (async/open? @channel)
              (in-response-limit? this))
       (let [msg (-> msg format-message fmt)]
-        (server/send! @channel msg false)
+        (async/send! @channel msg false)
         (swap! bytes-send + (count msg))
         (when-not (in-response-limit? this)
-          (server/close @channel)))
+          (async/close @channel)))
       (swap! buffer conj msg))
     this)
   
   (close! [this nb reason]
-    (when (server/open? @channel)
+    (when (async/open? @channel)
       (send! this {:type :close
                    :close-number nb
                    :close-reason reason})
-      (server/close @channel))
+      (async/close @channel))
     (on-close
      (:sockjs-handler this)
      (-> this
@@ -143,7 +145,7 @@
     (start-heatbeat this)
     (doseq [m @buffer
             :let [msg (-> m format-message fmt)]]
-      (server/send! ch msg false)
+      (async/send! ch msg false)
       (swap! buffer rest))
     this))
 
@@ -179,8 +181,8 @@
                             :content (map :content content-msg)}])
             msgs (concat open-msg content-msg close-msg)]
         (reset! buffer [])
-        (server/send! ch (apply str (map (comp fmt format-message) msgs)))
-        (server/close ch)
+        (async/send! ch (apply str (map (comp fmt format-message) msgs)))
+        (async/close ch)
         this)
       this)))
 
@@ -214,7 +216,7 @@
 (defn open-channel? [session]
   (let [channel @(:channel session)]
     (and (not (nil? channel))
-         (server/open? channel))))
+         (async/open? channel))))
 
 ;; session storage
 
@@ -235,13 +237,13 @@
 (defn register-new-channel-internal [session channel]
   (if (open-channel? session)
     (do ;; only one open channel is allowed
-      (server/send! channel
+      (async/send! channel
                     (-> {:type :close
                          :close-number 2010
                          :close-reason "Another connection still open"}
                         (format-message)
                         ((:fmt session))))
-      (server/close channel)
+      (async/close channel)
       session)
     (do
       (condp = (:ready-state session)
@@ -250,13 +252,13 @@
                         (assoc-ready-state :open)
                         (register-channel channel))
         :closed (do
-                  (server/send! channel
+                  (async/send! channel
                                 (-> {:type :close
                                      :close-number (:close-number session)
                                      :close-reason (:close-reason session)}
                                     (format-message)
                                     ((:fmt session))))
-                  (server/close channel)
+                  (async/close channel)
                   ;; remove session if there are no further request
                   (start-disconnect session)
                   session)

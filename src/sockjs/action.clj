@@ -2,8 +2,9 @@
   (:require [cheshire.core :as json]
             [clojure.string :as cstr]
             [sockjs.filter :as f]
-            [sockjs.session :as session]
-            [org.httpkit.server :as server]))
+            [immutant.web             :as web]
+            [immutant.web.async       :as async]
+            [sockjs.session :as session]))
 
 (defn error-500 [msg]
   {:status 500
@@ -38,7 +39,7 @@
              #(session/on-message sockjs-handler % m))))
         (catch com.fasterxml.jackson.core.JsonParseException e
           ;; close channel when invalid json is send.
-          (server/close channel))))))
+          (async/close channel))))))
 
 (defn websocket-on-close
   "returns the websocket on-close function for a given session id"
@@ -56,99 +57,97 @@
     {:status 400
      :body "Can \"Upgrade\" only to \"WebSocket\"."}
     ;; if we have a websocket connection initial the channel
-    (server/with-channel req channel
-      (if-not (session/session? session-id)
-        (let [s (session/create-streaming-session
-                 session-id identity
-                 :sockjs-handler sockjs-handler
-                 :heatbeat-delay heatbeat-delay
-                 :disconnect-delay disconnect-delay)]
-          (initialize-session s channel sockjs-handler))
-        (session/register-new-channel! session-id channel))
-      (server/on-receive
-       channel
-       (websocket-on-receive session-id sockjs-handler channel))
-      (server/on-close
-       channel
-       (websocket-on-close session-id)))))
+    (async/as-channel req
+                      {:on-open (fn [channel]
+                                  (if-not (session/session? session-id)
+                                    (let [s (session/create-streaming-session
+                                              session-id identity
+                                              :sockjs-handler sockjs-handler
+                                              :heatbeat-delay heatbeat-delay
+                                              :disconnect-delay disconnect-delay)]
+                                      (initialize-session s channel sockjs-handler))
+                                    (session/register-new-channel! session-id channel)))}
+                      {:on-message (fn [channel]
+                                     (websocket-on-receive session-id sockjs-handler channel))}
+                      {:on-close (fn [channel]
+                                   (websocket-on-close session-id))})))
+
 
 (defn xhr-streaming
   "the xhr streaming request handler."
   [req session-id {:keys [sockjs-handler heatbeat-delay disconnect-delay
                           response-limit] :as opts}]
-  (server/with-channel req channel
-    (server/on-close channel
-                     (fn [status]
-                       (session/update-session! session-id #(session/close! % 1002 "Connection interrupted"))
-                       )
-                     )
-    ;; always send 2049 bytes preclude
-    (server/send! channel
-                  (->> {:status 200
+  (async/as-channel req
+    {:on-close (fn [channel]
+                   (session/update-session! session-id #(session/close! % 1002 "Connection interrupted")))}
+    {:on-open (fn [channel]
+                  (async/send! channel
+                     (->> {:status 200}
                         :headers {"Content-Type"
                                   "application/javascript; charset=UTF-8"}
-                        :body (str (apply str (repeat 2048 "h")) "\n")}
+                        :body (str (apply str (repeat 2048 "h")) "\n")
                        (f/h-sid req opts)
                        (f/h-no-cache req opts)
                        (f/xhr-cors req opts)
                        (f/status-200 req opts))
-                  false)
-    ;; register the new channel
-    (if-not (session/session? session-id)
-      (let [s (session/create-streaming-session
-               session-id (fn [m] (str m "\n"))
-               :response-limit response-limit
-               :heatbeat-delay heatbeat-delay
-               :disconnect-delay disconnect-delay
-               :sockjs-handler sockjs-handler)]
-        (initialize-session s channel sockjs-handler))
-      (session/register-new-channel! session-id channel))))
+                     false)
+                  ;; register the new channel
+                  (if-not (session/session? session-id)
+                    (let [s (session/create-streaming-session
+                              session-id (fn [m] (str m "\n"))
+                              :response-limit response-limit
+                              :heatbeat-delay heatbeat-delay
+                              :disconnect-delay disconnect-delay
+                              :sockjs-handler sockjs-handler)]
+                      (initialize-session s channel sockjs-handler))
+                    (session/register-new-channel! session-id channel)))}))
+
 
 (defn eventsource
   "the eventsource handler"
   [req session-id {:keys [sockjs-handler heatbeat-delay disconnect-delay
                           response-limit] :as opts}]
-  (server/with-channel req channel
-    (if-not (session/session? session-id)
-      (let [s (session/create-streaming-session
-               session-id (fn [m] (str "data: " m "\r\n\r\n"))
-               :response-limit response-limit
-               :heatbeat-delay heatbeat-delay
-               :disconnect-delay disconnect-delay
-               :sockjs-handler sockjs-handler)]
-        ;; TODO: only send for new session or everytime the client connects???
-        (server/send! channel
-                      (->> {:status 200
-                            :headers {"Content-Type"
-                                      "text/event-stream; charset=UTF-8"}
-                            :body "\r\n"}
-                           (f/h-sid req opts)
-                           (f/h-no-cache req opts))
-                      false)
-        (initialize-session s channel sockjs-handler))
-      (session/register-new-channel! session-id channel))))
+  (async/as-channel req
+    {:on-open (fn [channel]
+                (if-not (session/session? session-id)
+                  (let [s (session/create-streaming-session
+                           session-id (fn [m] (str "data: " m "\r\n\r\n"))
+                           :response-limit response-limit
+                           :heatbeat-delay heatbeat-delay
+                           :disconnect-delay disconnect-delay
+                           :sockjs-handler sockjs-handler)]
+                    ;; TODO: only send for new session or everytime the client connects???
+                    (async/send! channel
+                                  (->> {:status 200
+                                        :headers {"Content-Type"
+                                                  "text/event-stream; charset=UTF-8"}
+                                        :body "\r\n"}
+                                       (f/h-sid req opts)
+                                       (f/h-no-cache req opts))
+                                  false)
+                    (initialize-session s channel sockjs-handler))
+                  (session/register-new-channel! session-id channel)))}))
 
 (defn- polling
   "Handle a polling request. (see `xhr-polling` and `jsonp`)"
   [req session-id sockjs-handler fmt disconnect-delay & [preclude]]
-  (server/with-channel req channel
-    (server/on-close channel
-                     (fn [status]
-                       (session/unregister-channel! session-id)
-                       (when (= status :client-close)
-                         (session/update-session! session-id
-                                                  #(session/close! % 1002 "Connection interrupted")))))
-    ;; optional send a preclude
-    (when preclude
-      (server/send! channel preclude false))
-    ;; register the new channel
-    (if-not (session/session? session-id)
-      (let [s (session/create-polling-session
-               session-id fmt
-               :sockjs-handler sockjs-handler
-               :disconnect-delay disconnect-delay)]
-        (initialize-session s channel sockjs-handler))
-      (session/register-new-channel! session-id channel))))
+  (async/as-channel req
+    {:on-close (fn [status]
+                   (session/unregister-channel! session-id)
+                   (when (= status :client-close)
+                     (session/update-session! session-id
+                                              #(session/close! % 1002 "Connection interrupted"))))}
+    {:on-open (fn [channel]
+                (when preclude
+                  (async/send! channel preclude false))
+                ;; register the new channel
+                (if-not (session/session? session-id)
+                  (let [s (session/create-polling-session
+                           session-id fmt
+                           :sockjs-handler sockjs-handler
+                           :disconnect-delay disconnect-delay)]
+                    (initialize-session s channel sockjs-handler))
+                  (session/register-new-channel! session-id channel)))}))
 
 (defn xhr-polling
   "handles the xhr polling request"
@@ -223,27 +222,28 @@
      (let [fmt-f #(str "<script>\np("
                        (json/generate-string %)
                        ");\n</script>\r\n")]
-       (server/with-channel req channel
+       (async/as-channel req
+         {:on-open (fn [channel]
          ;; send a preclude before every request
-         (server/send! channel
-                       (->> {:status 200
-                             :headers {"Content-Type"
-                                       "text/html; charset=UTF-8"}
-                             :body (.replace iframe-template
-                                             "{{ callback }}" cb)}
-                            (f/h-sid req opts)
-                            (f/h-no-cache req opts)
-                            (f/status-200 req opts))
-                       false)
-         (if-not (session/session? session-id)
-           (let [s (session/create-streaming-session
-                    session-id fmt-f
-                    :sockjs-handler sockjs-handler
-                    :heatbeat-delay heatbeat-delay
-                    :disconnect-delay disconnect-delay
-                    :response-limit response-limit)]
-             (initialize-session s channel sockjs-handler))
-           (session/register-new-channel! session-id channel)))))))
+                     (async/send! channel
+                                   (->> {:status 200
+                                         :headers {"Content-Type"
+                                                   "text/html; charset=UTF-8"}
+                                         :body (.replace iframe-template
+                                                         "{{ callback }}" cb)}
+                                        (f/h-sid req opts)
+                                        (f/h-no-cache req opts)
+                                        (f/status-200 req opts))
+                                   false)
+                     (if-not (session/session? session-id)
+                       (let [s (session/create-streaming-session
+                                session-id fmt-f
+                                :sockjs-handler sockjs-handler
+                                :heatbeat-delay heatbeat-delay
+                                :disconnect-delay disconnect-delay
+                                :response-limit response-limit)]
+                         (initialize-session s channel sockjs-handler))
+                       (session/register-new-channel! session-id channel)))})))))
 
 
 (defn common-send [req session-id sockjs-handler read-body-f success-msg]

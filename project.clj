@@ -8,8 +8,10 @@
   :test-paths ["test"]
 
   :dependencies [[org.clojure/clojure "1.6.0"]
-                 [http-kit "2.1.16"]
+                ; [http-kit "2.1.16"]
                  [cheshire "5.4.0"]
+                 [org.immutant/web "2.1.4"]
+                 [org.immutant/scheduling "2.1.4"]
                  [compojure "1.3.1"]]
 
   :profiles {:dev {:dependencies [[ring/ring-devel "1.3.2"]
