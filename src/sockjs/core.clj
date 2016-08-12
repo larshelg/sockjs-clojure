@@ -15,7 +15,7 @@
                         :heatbeat-delay 25000
                         :disconnect-delay 5000
                         :sockjs-handler handler
-                        :sockjs-url "http://cdn.sockjs.org/sockjs-0.3.min.js"}
+                        :sockjs-url "http://cdn.jsdelivr.net/sockjs/1/sockjs.min.js"}
                        (or options {}))]
     (context
      (:prefix options) []

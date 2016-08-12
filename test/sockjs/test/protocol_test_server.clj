@@ -4,15 +4,19 @@
         [compojure.handler :only [site]]
         [ring.middleware.params :only [wrap-params]]
         [ring.middleware.reload :only [wrap-reload]]
+        [immutant.web             :as web]
+        [immutant.web.async       :as async]
+        [immutant.web.middleware  :as web-middleware]
         [sockjs.core :only [sockjs-handler]]
-        clojure.test
-        org.httpkit.server)
+        clojure.test)
   (:require [compojure.route :as route]
             [sockjs.session :as session]))
 
 (defrecord EchoConnection []
   session/SockjsConnection
-  (session/on-open [this s] s)
+  (session/on-open [this s]
+    (println "hello")
+    s)
   (session/on-message [this s msg]
     (session/send! s {:type :msg :content msg}))
   (session/on-close [this s] s))
@@ -26,18 +30,18 @@
 
 (defroutes all-routes
   (GET "/" [] "hello world")
-  (sockjs-handler "/echo" (->EchoConnection) {:response-limit 4096})
-  (sockjs-handler "/close" (->CloseConnection) {:response-limit 4096})
-  (sockjs-handler "/disabled_websocket_echo" (->EchoConnection)
+  (sockjs-handler "/echo" (->EchoConnection) {:response-limit 4096}
+  ;(sockjs-handler "/close" (->CloseConnection) {:response-limit 4096})
+ ; (sockjs-handler "/disabled_websocket_echo" (->EchoConnection)
                   {:response-limit 4096
-                   :websocket false})
-  (sockjs-handler "/cookie_needed_echo" (->EchoConnection)
-                  {:response-limit 4096
-                   :jsessionid true})
-  (route/not-found "<p>Page not found.</p>"))
+                   :websocket false}))
+  ;(sockjs-handler "/cookie_needed_echo" (->EchoConnection)
+   ;               {:response-limit 4096
+    ;               :jsessionid true})
+  ;(route/not-found "<p>Page not found.</p>"))
 
 (defn start-server []
-  (run-server
+  (web/run
    (-> all-routes
        (wrap-params)
        (wrap-reload)

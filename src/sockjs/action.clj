@@ -56,9 +56,10 @@
     ;; if no websocket request return a message to upgrade to websocket
     {:status 400
      :body "Can \"Upgrade\" only to \"WebSocket\"."}
-    ;; if we have a websocket connection initial the channel
+     ;; if we have a websocket connection initial the channel
     (async/as-channel req
                       {:on-open (fn [channel]
+                                  (println "could this be opened man?")
                                   (if-not (session/session? session-id)
                                     (let [s (session/create-streaming-session
                                               session-id identity
@@ -69,7 +70,7 @@
                                     (session/register-new-channel! session-id channel)))}
                       {:on-message (fn [channel]
                                      (websocket-on-receive session-id sockjs-handler channel))}
-                      {:on-close (fn [channel]
+                      {:on-close (fn [channel {:keys [code reason]}]
                                    (websocket-on-close session-id))})))
 
 
@@ -78,8 +79,6 @@
   [req session-id {:keys [sockjs-handler heatbeat-delay disconnect-delay
                           response-limit] :as opts}]
   (async/as-channel req
-    {:on-close (fn [channel]
-                   (session/update-session! session-id #(session/close! % 1002 "Connection interrupted")))}
     {:on-open (fn [channel]
                   (async/send! channel
                      (->> {:status 200}
@@ -100,7 +99,9 @@
                               :disconnect-delay disconnect-delay
                               :sockjs-handler sockjs-handler)]
                       (initialize-session s channel sockjs-handler))
-                    (session/register-new-channel! session-id channel)))}))
+                    (session/register-new-channel! session-id channel)))}
+    {:on-close (fn [channel {:keys [code reason]}]
+                 (session/update-session! session-id #(session/close! % 1002 "Connection interrupted")))}))
 
 
 (defn eventsource
@@ -132,7 +133,7 @@
   "Handle a polling request. (see `xhr-polling` and `jsonp`)"
   [req session-id sockjs-handler fmt disconnect-delay & [preclude]]
   (async/as-channel req
-    {:on-close (fn [status]
+    {:on-close (fn [status {:keys [code reason]}]
                    (session/unregister-channel! session-id)
                    (when (= status :client-close)
                      (session/update-session! session-id

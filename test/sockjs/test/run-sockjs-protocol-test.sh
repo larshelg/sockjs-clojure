@@ -16,4 +16,4 @@ then
     ( cd $SOCKJS && make )
 fi
 
-( cd $SOCKJS && ./venv/bin/python sockjs-protocol-0.3.3.py )
+( cd $SOCKJS && ./venv/bin/python sockjs-protocol.py )
